@@ -2,8 +2,8 @@ use std::str::FromStr;
 
 #[derive(Debug)]
 pub enum Command {
-    TestCommand,    
-    Unknown(String),
+    TestCommand,
+    Unknown,
 }
 
 impl FromStr for Command {
@@ -12,8 +12,7 @@ impl FromStr for Command {
     fn from_str(input: &str) -> Result<Command, Self::Err> {
         match input {
             "TEST-COMMAND" => Ok(Command::TestCommand),
-            _ => Ok(Command::Unknown(input.to_string())),
+            _ => Ok(Command::Unknown),
         }
     }
 }
-

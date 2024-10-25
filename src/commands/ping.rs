@@ -2,19 +2,19 @@ use super::{register_command, Command};
 use ctor::ctor;
 use std::sync::Arc;
 
-pub struct TestCommand;
+pub struct Ping;
 
-impl Command for TestCommand {
+impl Command for Ping {
     fn name(&self) -> &'static str {
-        "TEST-COMMAND"
+        "PING"
     }
 
     fn execute(&self) {
-        println!("TestCommand executed!");
+        println!("Pong!");
     }
 }
 
 #[ctor]
 fn init() {
-    register_command(Arc::new(TestCommand));
+    register_command(Arc::new(Ping));
 }

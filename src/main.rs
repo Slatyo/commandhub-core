@@ -1,8 +1,7 @@
 mod commands;
 
 use chrono;
-use commands::command::Command;
-use commands::handlers::handle_command;
+use commands::get_command;
 use dotenv::dotenv;
 use openssl::ssl::{Ssl, SslAcceptor, SslFiletype, SslMethod, SslVerifyMode};
 use std::env;
@@ -33,20 +32,33 @@ async fn handle_client(stream: SslStream<tokio::net::TcpStream>) {
                     received
                 );
 
-                // Parse the received message into a Command
-                let command = received
-                    .parse::<Command>()
-                    .unwrap_or(Command::Unknown(received.clone()));
-                handle_command(command);
-
-                let response = format!("Command '{}' received and processed\n", received);
-                if let Err(e) = writer.write_all(response.as_bytes()).await {
+                // Look up the command in the registry
+                if let Some(cmd) = get_command(&received) {
+                    cmd.execute();
+                    let response = format!("Command '{}' executed successfully\n", received);
+                    if let Err(e) = writer.write_all(response.as_bytes()).await {
+                        eprintln!(
+                            "[{}] Failed to send response: {}",
+                            chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+                            e
+                        );
+                        break;
+                    }
+                } else {
                     eprintln!(
-                        "[{}] Failed to send response: {}",
+                        "[{}] Unknown command received: {}",
                         chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
-                        e
+                        received
                     );
-                    break;
+                    let response = format!("Unknown command '{}'\n", received);
+                    if let Err(e) = writer.write_all(response.as_bytes()).await {
+                        eprintln!(
+                            "[{}] Failed to send response: {}",
+                            chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+                            e
+                        );
+                        break;
+                    }
                 }
             }
             Err(e) => {
@@ -64,7 +76,6 @@ async fn handle_client(stream: SslStream<tokio::net::TcpStream>) {
 fn build_address() -> String {
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-
     format!("{}:{}", host, port)
 }
 
@@ -84,6 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     acceptor_builder.set_certificate_chain_file("cert.pem")?;
     acceptor_builder.set_verify(SslVerifyMode::NONE);
     let acceptor = acceptor_builder.build();
+
+    // Start the listener
     let listener = TcpListener::bind(build_address()).await?;
     println!(
         "[{}] Server listening...",

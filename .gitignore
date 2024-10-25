@@ -2,4 +2,5 @@
 .env
 key.pem
 cert.pem
+src/commands/commands_generated.rs
 
