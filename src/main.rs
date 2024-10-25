@@ -1,33 +1,60 @@
-use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
-use std::thread;
-use std::env;
-use dotenv::dotenv;
+mod commands;
+
 use chrono;
+use commands::command::Command;
+use commands::handlers::handle_command;
+use dotenv::dotenv;
+use openssl::ssl::{Ssl, SslAcceptor, SslFiletype, SslMethod, SslVerifyMode};
+use std::env;
+use std::pin::Pin;
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
+use tokio_openssl::SslStream;
 
-
-fn handle_client(mut stream: TcpStream) {
-    let mut buffer = [0; 512];
+async fn handle_client(stream: SslStream<tokio::net::TcpStream>) {
+    let (reader, mut writer) = io::split(stream);
+    let mut reader = BufReader::new(reader);
 
     loop {
-        match stream.read(&mut buffer) {
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
             Ok(0) => {
-                // Connection was closed
-                println!("[{}] Client disconnected", chrono::offset::Local::now().format("%Y-%m-%d %H:%M:%S %:z"));
+                println!(
+                    "[{}] Client disconnected",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z")
+                );
                 break;
             }
-            Ok(bytes_read) => {
-                let received = String::from_utf8_lossy(&buffer[..bytes_read]);
-                println!("[{}] Received: {}", chrono::offset::Local::now().format("%Y-%m-%d %H:%M:%S %:z"), received);
+            Ok(_) => {
+                let received = line.trim().to_string();
+                println!(
+                    "[{}] Received: {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+                    received
+                );
 
-                // Echo back the received data
-                if let Err(e) = stream.write_all(&buffer[..bytes_read]) {
-                    eprintln!("[{}] Failed to send response: {}", chrono::offset::Local::now().format("%Y-%m-%d %H:%M:%S %:z"), e);
+                // Parse the received message into a Command
+                let command = received
+                    .parse::<Command>()
+                    .unwrap_or(Command::Unknown(received.clone()));
+                handle_command(command);
+
+                let response = format!("Command '{}' received and processed\n", received);
+                if let Err(e) = writer.write_all(response.as_bytes()).await {
+                    eprintln!(
+                        "[{}] Failed to send response: {}",
+                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+                        e
+                    );
                     break;
                 }
             }
             Err(e) => {
-                eprintln!("[{}] Failed to read from socket: {}", chrono::offset::Local::now().format("%Y-%m-%d %H:%M:%S %:z"), e);
+                eprintln!(
+                    "[{}] Failed to read from socket: {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+                    e
+                );
                 break;
             }
         }
@@ -35,33 +62,73 @@ fn handle_client(mut stream: TcpStream) {
 }
 
 fn build_address() -> String {
-    let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = env::var("PORT").unwrap_or_else(|_| "7878".to_string());
-   
-    return format!("{}:{}", host, port);
+    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+
+    format!("{}:{}", host, port)
 }
 
-fn main() -> std::io::Result<()> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
-    println!("[{}] Start server on {}", chrono::offset::Local::now().format("%Y-%m-%d %H:%M:%S %:z"), build_address());
+    println!(
+        "[{}] Start server on {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+        build_address()
+    );
 
-    let listener = TcpListener::bind(build_address())?;
-    println!("[{}] Server listening...", chrono::offset::Local::now().format("%Y-%m-%d %H:%M:%S %:z"));
+    // Set up OpenSSL acceptor
+    let mut acceptor_builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
+    acceptor_builder.set_private_key_file("key.pem", SslFiletype::PEM)?;
+    acceptor_builder.set_certificate_chain_file("cert.pem")?;
+    acceptor_builder.set_verify(SslVerifyMode::NONE);
+    let acceptor = acceptor_builder.build();
+    let listener = TcpListener::bind(build_address()).await?;
+    println!(
+        "[{}] Server listening...",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z")
+    );
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                thread::spawn(|| {
-                    handle_client(stream);
-                });
+    loop {
+        let (stream, _addr) = listener.accept().await?;
+        let acceptor = acceptor.clone();
+
+        tokio::spawn(async move {
+            let ssl = match Ssl::new(acceptor.context()) {
+                Ok(ssl) => ssl,
+                Err(e) => {
+                    eprintln!(
+                        "[{}] Failed to create SSL object: {}",
+                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+                        e
+                    );
+                    return;
+                }
+            };
+
+            let mut ssl_stream = match SslStream::new(ssl, stream) {
+                Ok(ssl_stream) => ssl_stream,
+                Err(e) => {
+                    eprintln!(
+                        "[{}] Failed to create SSL stream: {}",
+                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+                        e
+                    );
+                    return;
+                }
+            };
+
+            if let Err(e) = Pin::new(&mut ssl_stream).accept().await {
+                eprintln!(
+                    "[{}] Failed to accept SSL connection: {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
+                    e
+                );
+                return;
             }
-            Err(e) => {
-                eprintln!("[{}] Connection failed: {}", chrono::offset::Local::now().format("%Y-%m-%d %H:%M:%S %:z"), e);
-            }
-        }
+
+            handle_client(ssl_stream).await;
+        });
     }
-
-    Ok(())
 }
-
