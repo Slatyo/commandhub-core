@@ -3,8 +3,7 @@
 ### Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/emergency-deployment-server.git
-cd emergency-deployment-server
+git clone https://github.com/Slatyo/commandhub-core.git
 ```
 
 ### Generate RSA Private Key and Self-Signed Certificate
